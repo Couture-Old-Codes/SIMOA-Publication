@@ -11,4 +11,515 @@ largely follow the same pattern as my MSc code but I will make some changes to
 address the feedback that was left such as factor analysis for the study 
 composites and exploring the non-linearity of DBAS Medication.
 
-## 
+## Load data
+```{r}
+library(readr)
+
+SIMOA <- read_csv("SIMOA Report.csv")
+View(SIMOA)
+```
+
+## Eligibility
+```{r}
+#| label: Eligible Participants
+######
+# Participant Inclusion/Exclusion Criteria
+# 1. Age ≥65 years (age_cat == 1, or age_cat == 0 with age >= 65)
+# 2. Selected at least one of 14 specified BZRAs
+# 3. Answered discontinuation outcome (freq_dich)
+# 4. Canadian resident (prov_terr != 14)
+######
+
+library(dplyr)
+
+# Ensure dplyr functions take priority (safety check)
+select <- dplyr::select
+filter <- dplyr::filter
+mutate <- dplyr::mutate
+
+# Original count
+n_original <- nrow(SIMOA)
+
+# After age filtering (age_cat == 1 means 65+)
+SIMOA_age_filtered <- SIMOA %>%
+  filter(age_cat == 1 | (age_cat == 0 & age >= 65))
+n_after_age <- nrow(SIMOA_age_filtered)
+
+# After c_sp filtering (selecting those who indicated at least one of 14 BZRAs)
+SIMOA_c_sp_filtered <- SIMOA_age_filtered %>%
+  mutate(
+    bzra_selected = rowSums(across(starts_with("c_sp___"), ~ .x == 1), na.rm = TRUE)
+  ) %>%
+  filter(bzra_selected > 0) %>%
+  select(-bzra_selected)
+n_after_c_sp <- nrow(SIMOA_c_sp_filtered)
+
+# After freq_dich filtering
+SIMOA_scrn_filtered <- SIMOA_c_sp_filtered %>%
+  filter(!is.na(freq_dich))
+n_after_scrn <- nrow(SIMOA_scrn_filtered)
+
+# Remove non-Canadian participants (prov_terr == 14)
+n_before_prov <- n_after_scrn
+SIMOA <- SIMOA_scrn_filtered %>%
+  filter(prov_terr != 14)
+n_after_prov <- nrow(SIMOA)
+
+# Calculate how many were removed
+n_removed_prov <- n_before_prov - n_after_prov
+
+# Summary output
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("SAMPLE INCLUSION/EXCLUSION SUMMARY\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("Original sample size:", n_original, "\n")
+cat("After age filtering (≥65 years):", n_after_age, " (", round(n_after_age / n_original * 100, 1), "% retained)\n")
+cat("After BZRA confirmation:", n_after_c_sp, " (", round(n_after_c_sp / n_after_age * 100, 1), "% retained)\n")
+cat("After outcome availability:", n_after_scrn, " (", round(n_after_scrn / n_after_c_sp * 100, 1), "% retained)\n")
+cat("After Canadian residency filter:", n_after_prov, " (", round(n_after_prov / n_after_scrn * 100, 1), "% retained)\n")
+cat("Non-Canadian participants removed:", n_removed_prov, "\n\n")
+
+# Participant flow (CONSORT-style)
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PARTICIPANT FLOW\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("Initial sample:                    ", n_original, "\n")
+cat("  ↓ Excluded (age <65):            ", n_original - n_after_age, "\n")
+cat("Eligible by age:                   ", n_after_age, "\n")
+cat("  ↓ Excluded (no BZRA use):        ", n_after_age - n_after_c_sp, "\n")
+cat("Confirmed BZRA users:              ", n_after_c_sp, "\n")
+cat("  ↓ Excluded (missing outcome):    ", n_after_c_sp - n_after_scrn, "\n")
+cat("With outcome data:                 ", n_after_scrn, "\n")
+cat("  ↓ Excluded (non-Canadian):       ", n_removed_prov, "\n")
+cat("FINAL ANALYTIC SAMPLE:             ", n_after_prov, "\n\n")
+
+# Total exclusion rate
+pct_excluded_total <- 100 * (1 - n_after_prov / n_original)
+cat("Total exclusion rate:", round(pct_excluded_total, 1), "%\n\n")
+
+if(pct_excluded_total > 50) {
+  cat("⚠️  More than 50% of sample excluded - verify inclusion criteria\n\n")
+}
+
+# Save exclusion summary for manuscript
+exclusion_summary <- data.frame(
+  Step = c(
+    "1. Initial sample",
+    "2. Age ≥65 years",
+    "3. BZRA use confirmed",
+    "4. Outcome available",
+    "5. Canadian resident",
+    "FINAL SAMPLE"
+  ),
+  N = c(n_original, n_after_age, n_after_c_sp, n_after_scrn, n_after_prov, n_after_prov),
+  N_Excluded = c(
+    NA,
+    n_original - n_after_age,
+    n_after_age - n_after_c_sp,
+    n_after_c_sp - n_after_scrn,
+    n_removed_prov,
+    NA
+  ),
+  Pct_Retained = c(
+    100,
+    round(100 * n_after_age / n_original, 1),
+    round(100 * n_after_c_sp / n_original, 1),
+    round(100 * n_after_scrn / n_original, 1),
+    round(100 * n_after_prov / n_original, 1),
+    round(100 * n_after_prov / n_original, 1)
+  )
+)
+
+write.csv(exclusion_summary, "sample_exclusion_flowchart.csv", row.names = FALSE)
+cat("✓ Saved: sample_exclusion_flowchart.csv\n\n")
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("✓ Eligibility filtering complete\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+```
+
+
+## Personality Missingness
+```{r}
+#==============================================================================
+# CHUNK 4: EARLY DROPOUT DIAGNOSTICS
+#==============================================================================
+# Purpose: Identify participants who dropped out before completing personality
+#          scales, and test whether dropouts differ from completers on observed
+#          pre-dropout variables.
+#
+# Key assumption: DBAS is the first personality scale in survey order.
+#   Confirmed via Step 0: all participants missing dbas1 are missing the
+#   entire personality block (100% across all scales).
+#==============================================================================
+
+cat("\n")
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("EARLY DROPOUT DIAGNOSTICS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+library(naniar)
+library(dplyr)
+library(ggplot2)
+library(broom)
+
+# -----------------------------------------------------------------------------
+# STEP 0: Validate dropout proxy
+# -----------------------------------------------------------------------------
+
+cat("STEP 0: Validating dropout proxy\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+dropout_check <- SIMOA %>%
+  filter(is.na(dbas1)) %>%
+  summarise(
+    n_missing_dbas1         = n(),
+    pct_also_missing_dbas16 = round(100 * mean(is.na(dbas_16)), 1),
+    pct_also_missing_surps1 = round(100 * mean(is.na(surps1)), 1),
+    pct_also_missing_ciss1  = round(100 * mean(is.na(ciss1)), 1),
+    pct_also_missing_bfi    = round(100 * mean(is.na(reserved)), 1)
+  )
+
+cat("Among participants missing dbas1 (n =", dropout_check$n_missing_dbas1, "):\n")
+cat("  Also missing dbas_16:", dropout_check$pct_also_missing_dbas16, "%\n")
+cat("  Also missing surps1: ", dropout_check$pct_also_missing_surps1, "%\n")
+cat("  Also missing ciss1:  ", dropout_check$pct_also_missing_ciss1, "%\n")
+cat("  Also missing BFI:    ", dropout_check$pct_also_missing_bfi, "%\n\n")
+
+partial_check <- SIMOA %>%
+  filter(!is.na(dbas1)) %>%
+  summarise(
+    n_completed_dbas1        = n(),
+    pct_missing_later_surps1 = round(100 * mean(is.na(surps1)), 1),
+    pct_missing_later_ciss1  = round(100 * mean(is.na(ciss1)), 1),
+    pct_missing_later_bfi    = round(100 * mean(is.na(reserved)), 1)
+  )
+
+cat("Among participants who completed dbas1 (n =", partial_check$n_completed_dbas1, "):\n")
+cat("  Missing surps1: ", partial_check$pct_missing_later_surps1, "%\n")
+cat("  Missing ciss1:  ", partial_check$pct_missing_later_ciss1, "%\n")
+cat("  Missing BFI:    ", partial_check$pct_missing_later_bfi, "%\n\n")
+
+# -----------------------------------------------------------------------------
+# STEP 1: Define dropout indicator
+# -----------------------------------------------------------------------------
+
+cat("STEP 1: Defining dropout indicator\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+SIMOA <- SIMOA %>%
+  mutate(
+    dropout_before_personality = ifelse(is.na(dbas1), 1, 0)
+  )
+
+cat("Dropout before personality section:\n")
+print(table(SIMOA$dropout_before_personality, useNA = "ifany"))
+cat(sprintf("\n  Dropouts:   %d (%.1f%%)\n",
+            sum(SIMOA$dropout_before_personality == 1),
+            100 * mean(SIMOA$dropout_before_personality == 1)))
+cat(sprintf("  Completers: %d (%.1f%%)\n\n",
+            sum(SIMOA$dropout_before_personality == 0),
+            100 * mean(SIMOA$dropout_before_personality == 0)))
+
+# -----------------------------------------------------------------------------
+# STEP 2: Compare dropouts vs completers
+# -----------------------------------------------------------------------------
+
+cat("STEP 2: Comparing dropouts vs completers on pre-dropout variables\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+# Ensure correct types
+truly_continuous <- c("age", "med_quant", "osss_3_score", "phq2_score")
+truly_categorical <- c("sex", "gender", "prov_terr", "education",
+                       "income", "employment", "driving_freq")
+
+# Coerce continuous vars
+for (var in truly_continuous[truly_continuous %in% names(SIMOA)]) {
+  SIMOA[[var]] <- as.numeric(as.character(SIMOA[[var]]))
+}
+
+# --- Continuous: Wilcoxon ---
+cat("Continuous variables (Wilcoxon rank-sum):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+continuous_results <- list()
+
+for (var in truly_continuous[truly_continuous %in% names(SIMOA)]) {
+  completer_vals <- SIMOA[[var]][SIMOA$dropout_before_personality == 0]
+  dropout_vals   <- SIMOA[[var]][SIMOA$dropout_before_personality == 1]
+  if (sum(!is.na(completer_vals)) < 5 || sum(!is.na(dropout_vals)) < 5) next
+  test <- wilcox.test(completer_vals, dropout_vals, exact = FALSE)
+  cat(sprintf("  %-20s Completer Mdn=%.1f  Dropout Mdn=%.1f  W=%.1f  p=%.4f %s\n",
+              var,
+              median(completer_vals, na.rm = TRUE),
+              median(dropout_vals,   na.rm = TRUE),
+              test$statistic, test$p.value,
+              ifelse(test$p.value < .05, "*", "")))
+  continuous_results[[var]] <- data.frame(
+    Variable         = var,
+    Completer_Median = median(completer_vals, na.rm = TRUE),
+    Dropout_Median   = median(dropout_vals,   na.rm = TRUE),
+    W                = round(test$statistic, 1),
+    p_value          = round(test$p.value, 4),
+    sig              = ifelse(test$p.value < .05, "*", "")
+  )
+}
+cat("\n")
+
+# --- Categorical: Chi-square or Fisher's exact ---
+cat("Categorical variables (chi-square or Fisher's exact):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+categorical_results <- list()
+
+for (var in truly_categorical[truly_categorical %in% names(SIMOA)]) {
+  tbl <- table(SIMOA[[var]], SIMOA$dropout_before_personality, useNA = "no")
+  if (nrow(tbl) < 2) next
+  expected <- tryCatch(chisq.test(tbl)$expected, error = function(e) NULL)
+  if (is.null(expected)) next
+  if (min(expected) < 5) {
+    test <- fisher.test(tbl, simulate.p.value = TRUE, B = 10000)
+    cat(sprintf("  %-20s Fisher's p=%.4f %s  [small expected counts]\n",
+                var, test$p.value,
+                ifelse(test$p.value < .05, "*", "")))
+    categorical_results[[var]] <- data.frame(
+      Variable = var,
+      Test     = "Fisher's exact",
+      p_value  = round(test$p.value, 4),
+      sig      = ifelse(test$p.value < .05, "*", "")
+    )
+  } else {
+    test <- chisq.test(tbl)
+    cat(sprintf("  %-20s χ²(%d)=%.3f  p=%.4f %s\n",
+                var, test$parameter, test$statistic, test$p.value,
+                ifelse(test$p.value < .05, "*", "")))
+    categorical_results[[var]] <- data.frame(
+      Variable = var,
+      Test     = "Chi-square",
+      p_value  = round(test$p.value, 4),
+      sig      = ifelse(test$p.value < .05, "*", "")
+    )
+  }
+}
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# STEP 3: Outcome-dropout relationship
+# -----------------------------------------------------------------------------
+
+cat("STEP 3: Outcome-dropout relationship\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+outcome_var <- "freq_dich"
+
+if (outcome_var %in% names(SIMOA)) {
+
+  tbl <- table(SIMOA[[outcome_var]], SIMOA$dropout_before_personality)
+  cat("Dropout status by", outcome_var, ":\n")
+  print(addmargins(tbl))
+  cat("\n")
+
+  expected <- tryCatch(chisq.test(tbl)$expected, error = function(e) NULL)
+  min_expected <- if (!is.null(expected)) round(min(expected), 2) else NA
+  cat(sprintf("Minimum expected cell count: %.2f\n\n", min_expected))
+
+  if (!is.na(min_expected) && min_expected < 5) {
+    cat("Expected counts too small for chi-square. Using Fisher's exact test.\n\n")
+    test <- fisher.test(tbl, simulate.p.value = TRUE, B = 10000)
+    cat(sprintf("Fisher's exact test: p = %.4f\n\n", test$p.value))
+    p_val <- test$p.value
+  } else {
+    test <- chisq.test(tbl)
+    cat(sprintf("Chi-square: χ²(%d) = %.3f, p = %.4f\n\n",
+                test$parameter, test$statistic, test$p.value))
+    p_val <- test$p.value
+  }
+
+  if (p_val < 0.05) {
+    cat("⚠️  Dropout is associated with outcome status.\n")
+    cat("→  MNAR signal: who dropped out depends on the outcome.\n")
+    cat("→  Sensitivity analyses are essential.\n\n")
+    outcome_related <- TRUE
+  } else {
+    cat("✓  Dropout is not significantly associated with outcome.\n")
+    cat("→  MAR assumption more defensible.\n\n")
+    outcome_related <- FALSE
+  }
+
+} else {
+  cat("Outcome variable not found.\n\n")
+  outcome_related <- NA
+}
+
+# -----------------------------------------------------------------------------
+# STEP 4: Multivariable logistic regression
+# -----------------------------------------------------------------------------
+
+cat("STEP 4: Multivariable logistic regression — predictors of dropout\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+cat("Identifies which pre-dropout variables independently predict dropout.\n\n")
+
+all_pred_vars <- c(truly_continuous, truly_categorical)
+available_preds <- all_pred_vars[all_pred_vars %in% names(SIMOA)]
+
+formula_str <- paste("dropout_before_personality ~",
+                     paste(available_preds, collapse = " + "))
+
+dropout_model <- tryCatch({
+  glm(as.formula(formula_str), data = SIMOA, family = binomial())
+}, error = function(e) {
+  cat("⚠️  Full model failed:", e$message, "\n")
+  cat("→  Falling back to age + sex + education.\n\n")
+  tryCatch(
+    glm(dropout_before_personality ~ age + sex + education,
+        data = SIMOA, family = binomial()),
+    error = function(e2) { cat("⚠️  Fallback also failed.\n"); NULL }
+  )
+})
+
+if (!is.null(dropout_model)) {
+  dropout_results <- broom::tidy(dropout_model) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      OR       = round(exp(estimate), 3),
+      CI_lower = round(exp(estimate - 1.96 * std.error), 3),
+      CI_upper = round(exp(estimate + 1.96 * std.error), 3),
+      p_value  = round(p.value, 4),
+      sig      = ifelse(p.value < 0.05, "*", "")
+    ) %>%
+    arrange(p.value) %>%
+    select(term, OR, CI_lower, CI_upper, p_value, sig)
+
+  print(dropout_results)
+  cat("\n")
+
+  sig_predictors <- dropout_results %>%
+    filter(p_value < 0.05) %>%
+    pull(term)
+
+  if (length(sig_predictors) > 0) {
+    cat("Independent predictors of dropout (p < .05):\n")
+    for (p in sig_predictors) cat("  •", p, "\n")
+    cat("\n→  Include these variables in your imputation model.\n\n")
+  } else {
+    cat("No independent predictors of dropout at p < .05.\n\n")
+  }
+
+} else {
+  sig_predictors <- character(0)
+}
+
+# -----------------------------------------------------------------------------
+# STEP 5: Overall summary
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("DROPOUT ANALYSIS SUMMARY\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat(sprintf("Total N: %d\n", nrow(SIMOA)))
+cat(sprintf("Dropouts (missing personality section): %d (%.1f%%)\n",
+            sum(SIMOA$dropout_before_personality),
+            100 * mean(SIMOA$dropout_before_personality)))
+cat(sprintf("Completers: %d (%.1f%%)\n\n",
+            sum(SIMOA$dropout_before_personality == 0),
+            100 * mean(SIMOA$dropout_before_personality == 0)))
+
+cat("Significant group differences: ")
+any_sig_continuous   <- any(sapply(continuous_results,   function(x) x$sig == "*"))
+any_sig_categorical  <- any(sapply(categorical_results,  function(x) x$sig == "*"))
+if (!any_sig_continuous && !any_sig_categorical && length(sig_predictors) == 0) {
+  cat("None\n\n")
+} else {
+  cat("See above\n\n")
+}
+
+cat("Outcome-dropout association: ")
+if (is.na(outcome_related)) {
+  cat("Not tested\n\n")
+} else if (outcome_related) {
+  cat("Significant — MNAR concern\n\n")
+} else {
+  cat("Not significant — MAR plausible\n\n")
+}
+
+cat("OVERALL ASSESSMENT:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+if (!outcome_related && !any_sig_continuous && !any_sig_categorical) {
+  cat("✓  Pattern consistent with MCAR.\n")
+  cat("   Dropouts do not differ from completers on any measured variable,\n")
+  cat("   and dropout is unrelated to outcome status.\n\n")
+  cat("RECOMMENDATIONS:\n")
+  cat("  1. Complete-case analysis is the primary approach and is defensible.\n")
+  cat("  2. Multiple imputation may be used as a sensitivity check.\n")
+  cat("  3. Note in limitations that MCAR cannot be formally proven —\n")
+  cat("     unmeasured variables may still predict dropout.\n\n")
+} else if (outcome_related) {
+  cat("⚠️  MNAR concern: dropout associated with outcome.\n\n")
+  cat("RECOMMENDATIONS:\n")
+  cat("  1. Multiple imputation is necessary but interpret cautiously.\n")
+  cat("  2. Conduct pattern-mixture or tipping point sensitivity analyses.\n")
+  cat("  3. Discuss MNAR as a limitation.\n\n")
+} else {
+  cat("~  MAR plausible: some variables predict dropout.\n\n")
+  cat("RECOMMENDATIONS:\n")
+  cat("  1. Use multiple imputation.\n")
+  cat("  2. Include significant predictors as auxiliary variables.\n")
+  cat("  3. Report complete-case analysis as sensitivity check.\n\n")
+}
+
+# -----------------------------------------------------------------------------
+# STEP 6: Save results
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("SAVING RESULTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+dropout_results_obj <- list(
+  dropout_n               = sum(SIMOA$dropout_before_personality),
+  completer_n             = sum(SIMOA$dropout_before_personality == 0),
+  dropout_proxy_check     = dropout_check,
+  partial_completer_check = partial_check,
+  continuous_comparisons  = if (length(continuous_results) > 0)
+                              do.call(rbind, continuous_results) else NULL,
+  categorical_comparisons = if (length(categorical_results) > 0)
+                              do.call(rbind, categorical_results) else NULL,
+  logistic_results        = if (exists("dropout_results")) dropout_results else NULL,
+  sig_predictors          = sig_predictors,
+  outcome_related         = outcome_related
+)
+
+saveRDS(dropout_results_obj, "dropout_diagnostics_results.rds")
+cat("✓ Saved: dropout_diagnostics_results.rds\n")
+
+if (!is.null(dropout_results_obj$continuous_comparisons)) {
+  write.csv(dropout_results_obj$continuous_comparisons,
+            "dropout_continuous_comparisons.csv", row.names = FALSE)
+  cat("✓ Saved: dropout_continuous_comparisons.csv\n")
+}
+
+if (!is.null(dropout_results_obj$categorical_comparisons)) {
+  write.csv(dropout_results_obj$categorical_comparisons,
+            "dropout_categorical_comparisons.csv", row.names = FALSE)
+  cat("✓ Saved: dropout_categorical_comparisons.csv\n")
+}
+
+cat("\n")
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("DROPOUT DIAGNOSTICS COMPLETE\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+```
+
+
+
+
+
+
+
+
+
+
