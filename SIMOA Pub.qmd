@@ -1,0 +1,14 @@
+---
+title: "SIMOA Publication"
+author: "PO Couture"
+format: html
+editor: visual
+---
+
+## SIMOA Publication
+This is the code I will use to prepare my SIMOA dataset for publication. It ill 
+largely follow the same pattern as my MSc code but I will make some changes to 
+address the feedback that was left such as factor analysis for the study 
+composites and exploring the non-linearity of DBAS Medication.
+
+## 
