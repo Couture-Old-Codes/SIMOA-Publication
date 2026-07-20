@@ -1,0 +1,9 @@
+Term,Estimate,SE,z_value,p_value,Significant_Bonferroni,Interpretation
+I(DBAS_Medications * log(DBAS_Medications)),0.9175,0.3717,2.469,0.0136,FALSE,✓ Linear assumption met
+I(EFA_F1 * log(EFA_F1)),0.276,0.9689,0.285,0.7757,FALSE,✓ Linear assumption met
+I(EFA_F2 * log(EFA_F2)),0.2851,0.8573,0.332,0.7395,FALSE,✓ Linear assumption met
+I(c_lengthofuse * log(c_lengthofuse)),0.0359,0.0346,1.037,0.2996,FALSE,✓ Linear assumption met
+I(n_sleep_conditions * log(n_sleep_conditions)),1.4803,0.9888,1.497,0.1344,FALSE,✓ Linear assumption met
+I(bzra_daily_dose_eq * log(bzra_daily_dose_eq)),-0.0207,0.0258,-0.801,0.4234,FALSE,✓ Linear assumption met
+I(wdl_symptom_count * log(wdl_symptom_count)),4.0326,1.6434,2.454,0.0141,FALSE,✓ Linear assumption met
+I(SURPS_Hopelessness * log(SURPS_Hopelessness)),0.6397,1.7108,0.374,0.7085,FALSE,✓ Linear assumption met
