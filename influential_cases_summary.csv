@@ -1,0 +1,3 @@
+Model,N_Influential,Pct_Influential,Pct_Discontinued,Scenario,Robust_Predictors
+Model A (Personality),21,5.0%,90.5%,SCENARIO 2: Heterogeneous / partial profile (25-74% predictors flagged),1 / 6
+Model B (Full),36,8.5%,83.3%,SCENARIO 2: Heterogeneous / partial profile (25-74% predictors flagged),4 / 9
