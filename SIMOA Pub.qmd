@@ -10620,3 +10620,246 @@ cat("  Rubin DB (1987). Multiple Imputation for Nonresponse in Surveys.\n\n")
 
 cat("✓ Ready for Chunk 15\n\n")
 ```
+
+
+## Figure 1 - Flow Diagram of Participant Exlcusion
+```{r}
+# ============================================================
+# Figure 1: Participant flow diagram
+# Requires: ggplot2
+# Output: grayscale TIFF, 800 dpi, Arial 8pt (Cambridge/Psych Med spec)
+# ============================================================
+
+library(ggplot2)
+
+# --- Font setup -----------------------------------------------------------
+# On Windows, "Arial" is usually available directly. On Mac/Linux, if you
+# get a font-substitution warning, install Arial or substitute
+# "Liberation Sans" (a free, metrically-identical clone) below.
+FONT_FAMILY <- "Arial"
+
+# --- Box coordinates --------------------------------------------------------
+# Coordinate system: x = 0-115, y = 0-170 (see coord_cartesian below).
+# Main boxes are 2 lines (title + subtitle); exclusion boxes are 3 lines
+# (bold "Excluded" + a manually wrapped 2-line reason), so exclusion boxes
+# need noticeably more height, and the gap between main boxes was widened
+# to 34 units (was 14) to give them room without overlapping.
+
+main_boxes <- data.frame(
+  xmin = 8, xmax = 52,
+  ymin = c(150, 100, 50, 0),
+  ymax = c(166, 116, 66, 16),
+  title = c("Entered survey", "Age \u226565 years confirmed",
+            "BZRA use confirmed", "Analytic sample"),
+  subtitle = c("N = 696", "n = 575", "n = 423", "N = 422")
+)
+
+# Exclusion boxes: reason text is pre-wrapped onto 2 lines with "\n" so it
+# never depends on box width alone to avoid overflow -- geom_text renders
+# embedded newlines as separate lines automatically.
+exc_boxes <- data.frame(
+  xmin = 60, xmax = 110,
+  ymin = c(120, 70, 20),
+  ymax = c(146, 96, 46),
+  title = "Excluded",
+  subtitle = c("Age <65 years\n(n=121)",
+               "BZRA not\nconfirmed (n=152)",
+               "Non-Canadian\nresident (n=1)")
+)
+
+# Vertical connectors between main boxes
+v_arrows <- data.frame(
+  x = 30, xend = 30,
+  y = c(150, 100, 50), yend = c(117, 67, 17)
+)
+
+# Horizontal branch connectors (main column -> exclusion box), aligned to
+# the vertical center of each exclusion box
+h_arrows <- data.frame(
+  x = 30, xend = 59,
+  y = c(133, 83, 33), yend = c(133, 83, 33)
+)
+
+# --- Build the plot ---------------------------------------------------------
+p_flow <- ggplot() +
+  geom_rect(data = main_boxes[1:3, ],
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = NA, color = "black", linewidth = 0.5) +
+  geom_rect(data = main_boxes[4, ],
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = NA, color = "black", linewidth = 0.9) +
+  geom_text(data = main_boxes,
+            aes(x = (xmin + xmax) / 2, y = ymax - 5, label = title),
+            family = FONT_FAMILY, size = 8 / .pt, fontface = "bold") +
+  geom_text(data = main_boxes,
+            aes(x = (xmin + xmax) / 2, y = ymin + 6, label = subtitle),
+            family = FONT_FAMILY, size = 8 / .pt) +
+  # Exclusion boxes
+  geom_rect(data = exc_boxes,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = NA, color = "black", linewidth = 0.5) +
+  geom_text(data = exc_boxes,
+            aes(x = (xmin + xmax) / 2, y = ymax - 5, label = title),
+            family = FONT_FAMILY, size = 8 / .pt, fontface = "bold") +
+  geom_text(data = exc_boxes,
+            aes(x = (xmin + xmax) / 2, y = ymin + 9, label = subtitle),
+            family = FONT_FAMILY, size = 8 / .pt, lineheight = 0.95) +
+  # Arrows
+  geom_segment(data = v_arrows,
+               aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(length = unit(0.10, "cm"), type = "closed"),
+               linewidth = 0.5) +
+  geom_segment(data = h_arrows,
+               aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(length = unit(0.10, "cm"), type = "closed"),
+               linewidth = 0.5) +
+  coord_cartesian(xlim = c(0, 115), ylim = c(-5, 175), expand = FALSE) +
+  theme_void() +
+  # Explicit opaque white background -- without this, ggsave's tiff device
+  # renders a transparent background (RGB all 0, distinguished only by an
+  # alpha channel), which then turns solid black if anything downstream
+  # (e.g. the grayscale conversion below) flattens or drops alpha.
+  theme(plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA))
+
+# --- Save as grayscale TIFF, 800 dpi ---------------------------------------
+ggsave("Figure1_ParticipantFlow.tiff", plot = p_flow,
+       width = 3.6, height = 5.6, units = "in",
+       dpi = 800, compression = "lzw", bg = "white")
+
+# Convert RGB -> true grayscale (Cambridge requires 8-bit grayscale,
+# not RGB, for "combination artwork"). Requires the `magick` package.
+if (requireNamespace("magick", quietly = TRUE)) {
+  img <- magick::image_read("Figure1_ParticipantFlow.tiff")
+  img <- magick::image_convert(img, colorspace = "gray")
+  magick::image_write(img, "Figure1_ParticipantFlow.tiff",
+                       format = "tiff", compression = "LZW")
+} else {
+  message("Install the `magick` package to auto-convert to true grayscale: ",
+          "install.packages('magick')")
+}
+```
+
+
+
+## Figure 2 - Forest Plot of LR Results
+```{r}
+# ============================================================
+# Figure 2: Forest plot of odds ratios (Reduced vs. Full model)
+# Requires: ggplot2, patchwork
+# Output: grayscale TIFF, 800 dpi, Arial 8pt (Cambridge/Psych Med spec)
+# ============================================================
+
+library(ggplot2)
+library(patchwork)
+
+FONT_FAMILY <- "Arial"  
+
+# --- Data --------------------------------------------------------------
+# Order matters: this sets top-to-bottom order in the plot, so list your
+# predictors in the same order you want them to appear (first row = top).
+reduced_df <- data.frame(
+  label = c("DBAS Medication", "SURPS Hopelessness", "CISS Emotion",
+            "DBAS Consequences", "BFI Conscientiousness", "BFI Neuroticism",
+            "SURPS Sensation-Seeking"),
+  or  = c(0.63, 0.60, 0.84, 1.08, 0.84, 1.04, 1.52),
+  lo  = c(0.54, 0.32, 0.57, 0.92, 0.61, 0.77, 0.89),
+  hi  = c(0.74, 1.13, 1.24, 1.25, 1.17, 1.40, 2.59),
+  sig = c(TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+
+full_df <- data.frame(
+  label = c("Discontinuation self-efficacy", "DBAS Medication",
+            "Perceived adverse effects", "Length of use",
+            "BZRA daily dose equivalent", "Perceived dependence",
+            "Number of sleep conditions", "Withdrawal symptom count",
+            "Withdrawal: insomnia only", "Withdrawal: other symptoms",
+            "Functional impairment"),
+  or  = c(2.63, 0.75, 1.45, 0.98, 1.18, 1.20, 0.84, 0.73, 1.08, 1.19, 1.37),
+  lo  = c(1.81, 0.64, 0.86, 0.95, 0.98, 0.80, 0.56, 0.39, 0.45, 0.27, 0.89),
+  hi  = c(3.81, 0.87, 2.42, 1.01, 1.41, 1.80, 1.24, 1.36, 2.63, 5.28, 2.13),
+  sig = c(TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+
+# Preserve top-to-bottom order (ggplot reverses factor levels by default)
+reduced_df$label <- factor(reduced_df$label, levels = rev(reduced_df$label))
+full_df$label    <- factor(full_df$label, levels = rev(full_df$label))
+
+# --- Shared plotting function --------------------------------------------
+make_forest_panel <- function(df, panel_title) {
+  ggplot(df, aes(x = or, y = label)) +
+    geom_vline(xintercept = 1, linetype = "dashed", linewidth = 0.4, color = "black") +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.15, linewidth = 0.5) +
+    geom_point(aes(fill = sig), shape = 21, size = 2.2, stroke = 0.5, color = "black") +
+    scale_fill_manual(values = c(`TRUE` = "black", `FALSE` = "white"), guide = "none") +
+    scale_x_log10(breaks = c(0.2, 0.5, 1, 2, 5), limits = c(0.2, 6)) +
+    labs(x = "Odds ratio (log scale)", y = NULL, title = panel_title) +
+    theme_minimal(base_family = FONT_FAMILY, base_size = 8) +
+    theme(
+      panel.grid = element_blank(),
+      axis.line.x = element_line(linewidth = 0.5, color = "black"),
+      axis.ticks.x = element_line(linewidth = 0.5, color = "black"),
+      axis.text = element_text(color = "black", size = 8),
+      axis.title = element_text(color = "black", size = 8),
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 8),
+      plot.margin = margin(4, 8, 4, 4)
+    )
+}
+
+bg_theme <- theme(plot.background = element_rect(fill = "white", color = NA))
+
+p1 <- make_forest_panel(reduced_df, "Reduced model") + bg_theme
+p2 <- make_forest_panel(full_df, "Full model") + bg_theme
+
+# --- Combine panels + shared legend (patchwork) ---------------------------
+# Manual legend built as a tiny dummy plot glued to the bottom, since the
+# fill aesthetic above is set to guide = "none" (we want it grayscale-only,
+# not a "TRUE/FALSE" legend label).
+# x-positions are spaced generously (0-10 range, points at 1 and 5.5) so
+# the two text labels have plenty of room and can never collide -- this
+# was previously too tight (points at x=1,2 with text ~1.6 units wide,
+# which visibly overlapped).
+legend_df <- data.frame(
+  x = c(1, 5.5), y = c(1, 1),
+  label = c("Significant (p < .05)", "Not significant"),
+  sig = c(TRUE, FALSE)
+)
+p_legend <- ggplot(legend_df, aes(x, y)) +
+  geom_point(aes(fill = sig), shape = 21, size = 2.2, stroke = 0.5, color = "black") +
+  geom_text(aes(label = label), family = FONT_FAMILY, size = 8 / .pt,
+            hjust = 0, nudge_x = 0.25) +
+  scale_fill_manual(values = c(`TRUE` = "black", `FALSE` = "white"), guide = "none") +
+  xlim(0, 10) +
+  theme_void() +
+  bg_theme
+
+# NOTE: deliberately NOT using patchwork's `&` operator here (e.g.
+# `patchwork_obj & theme(...)`) to apply a shared theme across panels --
+# on some systems, another loaded package (commonly `Matrix` or `raster`,
+# often pulled in as a dependency) redefines `&` as an S4 generic, which
+# breaks patchwork's `&.patchwork` dispatch with:
+#   "Can't find method for generic `&(e1, e2)`"
+# Applying bg_theme to p1, p2, and p_legend individually (above) sidesteps
+# this entirely and is more robust across R environments.
+p_combined <- (p1 | p2) / p_legend +
+  plot_layout(heights = c(20, 1))
+
+# --- Save as grayscale TIFF, 800 dpi ---------------------------------------
+ggsave("Figure2_ForestPlot.tiff", plot = p_combined,
+       width = 6.8, height = 4.4, units = "in",
+       dpi = 800, compression = "lzw", bg = "white")
+
+if (requireNamespace("magick", quietly = TRUE)) {
+  img <- magick::image_read("Figure2_ForestPlot.tiff")
+  img <- magick::image_convert(img, colorspace = "gray")
+  magick::image_write(img, "Figure2_ForestPlot.tiff",
+                       format = "tiff", compression = "LZW")
+} else {
+  message("Install the `magick` package to auto-convert to true grayscale: ",
+          "install.packages('magick')")
+}
+```
+
+
+
+
