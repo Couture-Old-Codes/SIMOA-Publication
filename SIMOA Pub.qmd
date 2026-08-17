@@ -8445,7 +8445,6 @@ cat("✓ Ready for Chunk 13: reporting / visualisation\n\n")
 ```
 
 ## Additional Tests
-
 ```{r}
 #==============================================================================
 # CHUNK 13: POST-LOGISTIC REGRESSION DIAGNOSTICS (MULTIPLY IMPUTED DATA)
@@ -8461,6 +8460,9 @@ cat("✓ Ready for Chunk 13: reporting / visualisation\n\n")
 #                             DBAS_Medications Box-Tidwell flag in Model A
 #                             (linear vs natural cubic spline)
 #     5. Class imbalance    — distribution; threshold approach (Klok 2022)
+#     6. Part K             — ten-fold stratified cross-validation, pooled
+#                             across imputations, with optimism vs. the
+#                             apparent (Chunk 12) AUC
 #
 # Design decisions:
 #   - AUC reported here is taken from Chunk 12 (per-imputation mean with
@@ -8471,6 +8473,14 @@ cat("✓ Ready for Chunk 13: reporting / visualisation\n\n")
 #   - Box-Tidwell run on imputation 1 (Harrell, 2015; van Buuren, 2018);
 #     variables with min <= 0 shifted by +1 before log; Bonferroni per model.
 #   - Class imbalance: no resampling correction (Klok et al., 2022).
+#   - Cross-validation (Part K): within each of the m imputed datasets,
+#     participants are randomly assigned to 10 folds stratified by outcome
+#     (folds hold the stopper/continuer proportion roughly constant), the
+#     model is refit on 9 folds and evaluated on the held-out fold, and this
+#     repeats until every fold has served once as the validation set.
+#     Fold-level AUCs are averaged within each imputation, then pooled across
+#     all m imputations. Optimism is the apparent AUC (Chunk 12, fit and
+#     evaluated on the same data) minus this cross-validated AUC.
 #
 # Reads from:
 #   regression_comparison_results.rds   (Chunk 12; also supplies AUC)
@@ -8482,6 +8492,8 @@ cat("✓ Ready for Chunk 13: reporting / visualisation\n\n")
 #   Harrell FE (2015). Regression Modeling Strategies (2nd ed.). Springer.
 #   Hosmer & Lemeshow (2000). Applied Logistic Regression (2nd ed.). Wiley.
 #   Klok et al. (2022). JAMIA. doi:10.1093/jamia/ocac093
+#   Kohavi R (1995). A study of cross-validation and bootstrap for accuracy
+#     estimation and model selection. IJCAI, 14(2):1137-1145.
 #   Nagelkerke NJD (1991). Biometrika, 78(3):691-692.
 #   Rubin DB (1987). Multiple Imputation for Nonresponse in Surveys. Wiley.
 #   van Buuren S (2018). Flexible Imputation of Missing Data. CRC Press.
@@ -8944,6 +8956,9 @@ cat("  Threshold optimised via Youden's J index (Part E).\n\n")
 
 #------------------------------------------------------------------------------
 # PART H: COMBINED DIAGNOSTIC SUMMARY TABLE
+#   NOTE: cross-validation results (Part K) and their optimism figures are
+#   appended to this table further down, once Part K has run — see the
+#   "summary_tbl <- rbind(...)" call near the end of Part K.
 #------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
@@ -9141,6 +9156,138 @@ if (exists("output_ch13")) {
 }
 
 #------------------------------------------------------------------------------
+# PART K (NEW): TEN-FOLD STRATIFIED CROSS-VALIDATION
+#   Within each of the m imputed datasets, participants are randomly assigned
+#   to 10 folds stratified by outcome (stratification keeps the stopper/
+#   continuer proportion roughly constant across folds, which matters here
+#   given the class imbalance quantified in Part G). The model is refit on 9
+#   folds and evaluated on the held-out fold; this repeats until every fold
+#   has served once as the validation set. Fold-level AUCs are averaged
+#   within each imputation to give one cross-validated AUC per imputation,
+#   and those m values are pooled (simple mean/SD; Rubin's rules add little
+#   here since cross-validated AUC is already an out-of-sample summary, not
+#   a model parameter with its own analytic sampling variance).
+#
+#   Optimism = apparent AUC (Chunk 12; fit and evaluated on the same data)
+#   minus this cross-validated AUC. A small optimism indicates the apparent
+#   AUC is not substantially inflated by fitting and evaluating on the same
+#   observations.
+#------------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART K: Ten-fold cross-validation (stratified by outcome)\n")
+cat("Ref: Kohavi (1995); stratified within each of the m imputations\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+set.seed(2026)  # reproducibility of fold assignment; change/remove if you
+                # already set a global seed earlier in the pipeline
+
+run_cv <- function(formula_obj, data_list, outcome_var, k = 10, label) {
+
+  cat(sprintf("%s:\n", label))
+
+  fold_auc_by_imp <- matrix(NA_real_, nrow = length(data_list), ncol = k)
+
+  for (i in seq_along(data_list)) {
+    dat <- data_list[[i]]
+    obs <- dat[[outcome_var]]
+
+    # Stratified fold assignment: shuffle indices within each outcome level,
+    # then assign fold labels 1:k in rotation so every fold gets a similar
+    # proportion of stoppers and continuers.
+    folds <- rep(NA_integer_, nrow(dat))
+    for (lvl in unique(obs)) {
+      idx        <- which(obs == lvl)
+      idx        <- sample(idx)
+      folds[idx] <- rep(seq_len(k), length.out = length(idx))
+    }
+
+    for (f in seq_len(k)) {
+      test_idx  <- which(folds == f)
+      train_idx <- which(folds != f)
+
+      fit_f <- tryCatch(
+        glm(formula_obj, data = dat[train_idx, ], family = binomial()),
+        error = function(e) NULL)
+      if (is.null(fit_f)) next
+
+      pred_f <- tryCatch(
+        predict(fit_f, newdata = dat[test_idx, ], type = "response"),
+        error = function(e) rep(NA_real_, length(test_idx)))
+
+      obs_f <- obs[test_idx]
+      if (length(unique(obs_f)) < 2 || all(is.na(pred_f))) next
+
+      auc_f <- tryCatch(
+        as.numeric(auc(roc(obs_f, pred_f, quiet = TRUE))),
+        error = function(e) NA_real_)
+
+      fold_auc_by_imp[i, f] <- auc_f
+    }
+  }
+
+  # Mean fold-level AUC within each imputation, then pooled across imputations
+  mean_auc_per_imp <- rowMeans(fold_auc_by_imp, na.rm = TRUE)
+  cv_auc_mean      <- mean(mean_auc_per_imp, na.rm = TRUE)
+  cv_auc_sd        <- sd(mean_auc_per_imp,   na.rm = TRUE)
+
+  # Fold-level stability across imputations
+  fold_mean <- colMeans(fold_auc_by_imp, na.rm = TRUE)
+  fold_sd   <- apply(fold_auc_by_imp, 2, sd, na.rm = TRUE)
+
+  cat(sprintf("  Cross-validated AUC (pooled across %d imputations): %.3f (SD = %.3f)\n",
+              length(data_list), cv_auc_mean, cv_auc_sd))
+  cat(sprintf("  Range across imputations: %.3f - %.3f\n\n",
+              min(mean_auc_per_imp, na.rm = TRUE), max(mean_auc_per_imp, na.rm = TRUE)))
+
+  cat("  Fold-level AUC stability (mean, SD across imputations):\n")
+  fold_tbl <- data.frame(Fold = seq_len(k),
+                         Mean_AUC = round(fold_mean, 3),
+                         SD       = round(fold_sd,   3))
+  print(fold_tbl, row.names = FALSE)
+  cat("\n")
+
+  list(cv_auc_mean = cv_auc_mean, cv_auc_sd = cv_auc_sd,
+       mean_auc_per_imputation = mean_auc_per_imp,
+       fold_auc_matrix = fold_auc_by_imp,
+       fold_table = fold_tbl, k = k)
+}
+
+cv_A <- run_cv(formula_A, imputed_list, outcome_var, k = 10, "Model A — Personality")
+cv_B <- run_cv(formula_B, imputed_list, outcome_var, k = 10, "Model B — Full")
+
+# Optimism = apparent (Chunk 12) AUC minus cross-validated AUC
+apparent_auc_A <- if (!is.null(auc12_A)) auc12_A$AUC_mean[1] else NA_real_
+apparent_auc_B <- if (!is.null(auc12_B)) auc12_B$AUC_mean[1] else NA_real_
+optimism_A     <- apparent_auc_A - cv_A$cv_auc_mean
+optimism_B     <- apparent_auc_B - cv_B$cv_auc_mean
+
+cat("OPTIMISM (apparent AUC minus cross-validated AUC):\n")
+cat(sprintf("  Model A: apparent %.3f - CV %.3f = optimism %+.4f\n",
+            apparent_auc_A, cv_A$cv_auc_mean, optimism_A))
+cat(sprintf("  Model B: apparent %.3f - CV %.3f = optimism %+.4f\n\n",
+            apparent_auc_B, cv_B$cv_auc_mean, optimism_B))
+cat("  Interpretation: small optimism (e.g., < .03-.05) indicates the\n")
+cat("  apparent AUC is not substantially inflated by evaluating the model\n")
+cat("  on the same data it was fit to.\n\n")
+
+# Append cross-validation rows onto the Part H summary table
+summary_tbl <- rbind(
+  summary_tbl,
+  data.frame(
+    Diagnostic = c("Cross-validated AUC (10-fold, pooled)",
+                   "Optimism (apparent - CV)"),
+    Model_A = c(sprintf("%.3f (SD %.3f)", cv_A$cv_auc_mean, cv_A$cv_auc_sd),
+               sprintf("%+.4f", optimism_A)),
+    Model_B = c(sprintf("%.3f (SD %.3f)", cv_B$cv_auc_mean, cv_B$cv_auc_sd),
+               sprintf("%+.4f", optimism_B)),
+    stringsAsFactors = FALSE))
+
+cat("Updated diagnostic summary (with cross-validation):\n")
+print(summary_tbl, row.names = FALSE)
+cat("\n")
+
+#------------------------------------------------------------------------------
 # PART I: SAVE ALL RESULTS
 #------------------------------------------------------------------------------
 
@@ -9150,7 +9297,8 @@ cat("═════════════════════════
 
 output_ch13 <- list(
 
-  nagelkerke = list(model_A = r2_A, model_B = r2_B),
+  nagelkerke = list(model_A = r2_A, model_B = r2_B,
+                    model_A_spline = r2_A_spl),
 
   hosmer_lemeshow = list(model_A = hl_A, model_B = hl_B),
 
@@ -9159,6 +9307,15 @@ output_ch13 <- list(
   box_tidwell = list(model_A = bt_A, model_B = bt_B),
 
   dbas_med_sensitivity = dbas_sens,
+
+  delong_spline_sensitivity = delong_spline,
+
+  cross_validation = list(
+    model_A  = cv_A,
+    model_B  = cv_B,
+    optimism = list(model_A = optimism_A, model_B = optimism_B,
+                    apparent_auc_A = apparent_auc_A,
+                    apparent_auc_B = apparent_auc_B)),
 
   class_imbalance = list(
     table = tbl, proportions = prop_tbl,
@@ -9175,6 +9332,8 @@ output_ch13 <- list(
     bt_imputation     = 1,
     bt_note           = "Imputation 1 only — standard for assumption checking",
     f2_note           = "Part F2: DBAS_Medications linear vs natural cubic spline (Model A)",
+    cv_method         = "10-fold, stratified by outcome, within each of the m imputations; folds pooled by simple mean/SD across imputations",
+    cv_seed           = 2026,
     resampling        = "None — Klok et al. (2022) justification",
     vars_A = vars_A, vars_B = vars_B, cont_A = cont_A, cont_B = cont_B,
     m = m, N = N,
@@ -9184,6 +9343,7 @@ output_ch13 <- list(
       "Harrell FE (2015). Regression Modeling Strategies (2nd ed.).",
       "Hosmer & Lemeshow (2000). Applied Logistic Regression (2nd ed.).",
       "Klok et al. (2022). JAMIA. doi:10.1093/jamia/ocac093",
+      "Kohavi R (1995). IJCAI, 14(2):1137-1145.",
       "Nagelkerke NJD (1991). Biometrika, 78(3):691-692.",
       "Rubin DB (1987). Multiple Imputation for Nonresponse in Surveys.",
       "van Buuren S (2018). Flexible Imputation of Missing Data.",
@@ -9197,12 +9357,17 @@ if (!is.null(bt_A) && !is.null(bt_A$results))
 if (!is.null(bt_B) && !is.null(bt_B$results))
   write_csv(bt_B$results, "chunk13_boxtidwell_B.csv")
 
+write_csv(cv_A$fold_table, "chunk13_cv_fold_table_A.csv")
+write_csv(cv_B$fold_table, "chunk13_cv_fold_table_B.csv")
+
 cat("✓ Saved: chunk13_diagnostics_results.rds\n")
 cat("✓ Saved: chunk13_diagnostic_summary.csv\n")
 if (!is.null(bt_A) && !is.null(bt_A$results))
   cat("✓ Saved: chunk13_boxtidwell_A.csv\n")
 if (!is.null(bt_B) && !is.null(bt_B$results))
   cat("✓ Saved: chunk13_boxtidwell_B.csv\n")
+cat("✓ Saved: chunk13_cv_fold_table_A.csv\n")
+cat("✓ Saved: chunk13_cv_fold_table_B.csv\n")
 cat("\n")
 
 #------------------------------------------------------------------------------
@@ -9222,7 +9387,10 @@ cat(sprintf("  HL p-value:     A=%.4f (%s)  B=%.4f (%s)\n",
             ifelse(is.na(hl_p_A), "NA", ifelse(hl_p_A >= 0.05, "Adequate", "Poor")),
             ifelse(is.na(hl_p_B), NA, hl_p_B),
             ifelse(is.na(hl_p_B), "NA", ifelse(hl_p_B >= 0.05, "Adequate", "Poor"))))
-cat(sprintf("  AUC (Chunk 12): A=%s  B=%s\n", cm_A$auc_formatted, cm_B$auc_formatted))
+cat(sprintf("  AUC (Chunk 12, apparent): A=%s  B=%s\n", cm_A$auc_formatted, cm_B$auc_formatted))
+cat(sprintf("  AUC (10-fold CV, pooled): A=%.3f  B=%.3f\n", cv_A$cv_auc_mean, cv_B$cv_auc_mean))
+cat(sprintf("  Optimism (apparent - CV): A=%+.4f  B=%+.4f\n",
+            optimism_A, optimism_B))
 cat(sprintf("  Threshold:      A=%.4f  B=%.4f (Youden's J)\n",
             cm_A$threshold, cm_B$threshold))
 cat(sprintf("  Sensitivity:    A=%.3f  B=%.3f\n", cm_A$sensitivity, cm_B$sensitivity))
@@ -9236,6 +9404,8 @@ cat(sprintf("  Imbalance:      %.2f:1\n\n", ratio))
 
 cat("✓ Ready for Chunk 14: influential cases analysis\n\n")
 ```
+
+
 
 ## Influential Cases
 
