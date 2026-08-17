@@ -1,14 +1,16 @@
 Diagnostic,Model_A,Model_B
-Nagelkerke pseudo-R2 (manual mean),0.2046,0.3298
-HL chi-square,12.292,12.983
-HL p-value,0.1386,0.1124
+Nagelkerke pseudo-R2 (manual mean),0.2046,0.3642
+HL chi-square,12.292,10.672
+HL p-value,0.1386,0.221
 HL interpretation,Adequate,Adequate
-AUC (Chunk 12 mean [95% CI]),"0.739 [0.682, 0.794]","0.792 [0.740, 0.842]"
-Operating threshold (Youden),0.3,0.3903
-Sensitivity,0.626,0.583
-Specificity,0.779,0.915
-PPV,0.514,0.72
-NPV,0.848,0.854
-Accuracy,0.737,0.825
+AUC (Chunk 12 mean [95% CI]),"0.739 [0.682, 0.794]","0.817 [0.768, 0.864]"
+Operating threshold (Youden),0.3,0.3144
+Sensitivity,0.626,0.757
+Specificity,0.779,0.795
+PPV,0.514,0.58
+NPV,0.848,0.897
+Accuracy,0.737,0.784
 Box-Tidwell violations,I(DBAS_Medications * log(DBAS_Medications)),None
 Class imbalance ratio,2.67:1,2.67:1
+"Cross-validated AUC (10-fold, pooled)",0.721 (SD 0.015),0.793 (SD 0.010)
+Optimism (apparent - CV),+0.0188,+0.0242
